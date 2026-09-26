@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Stock Watch v6", page_icon="📡", layout="wide")
 
@@ -152,11 +154,44 @@ def intra_analyze(d):
     else: sig="⚪ 대기"
     return dict(x=x,p=p,vwap=vw,rsi=float(a.RSI) if pd.notna(a.RSI) else 50,vr=vr,sup=sup,res=res,sig=sig)
 
+
+def intraday_chart(q, bars=60):
+    z=q["x"].tail(bars).copy()
+    # Price panel + volume panel. Range is explicitly limited to visible bars.
+    lo=float(min(z.Low.min(),z.VWAP.min(),z.EMA9.min(),z.EMA20.min()))
+    hi=float(max(z.High.max(),z.VWAP.max(),z.EMA9.max(),z.EMA20.max()))
+    span=max(hi-lo, hi*.002)
+    ymin=lo-span*.06
+    ymax=hi+span*.06
+
+    fig=make_subplots(rows=2,cols=1,shared_xaxes=True,
+                      row_heights=[0.78,0.22],vertical_spacing=0.025)
+    fig.add_trace(go.Candlestick(
+        x=z.index,open=z.Open,high=z.High,low=z.Low,close=z.Close,
+        name="가격",showlegend=False
+    ),row=1,col=1)
+    fig.add_trace(go.Scatter(x=z.index,y=z.VWAP,name="VWAP",mode="lines",line={"width":2}),row=1,col=1)
+    fig.add_trace(go.Scatter(x=z.index,y=z.EMA9,name="EMA9",mode="lines",line={"width":1.3}),row=1,col=1)
+    fig.add_trace(go.Scatter(x=z.index,y=z.EMA20,name="EMA20",mode="lines",line={"width":1.3}),row=1,col=1)
+    fig.add_trace(go.Bar(x=z.index,y=z.Volume,name="거래량",showlegend=False),row=2,col=1)
+
+    fig.update_yaxes(range=[ymin,ymax],row=1,col=1,fixedrange=False)
+    fig.update_xaxes(rangeslider_visible=False,row=1,col=1)
+    fig.update_xaxes(rangeslider_visible=False,row=2,col=1)
+    fig.update_layout(
+        height=610,
+        margin={"l":4,"r":4,"t":30,"b":4},
+        legend={"orientation":"h","yanchor":"bottom","y":1.01,"xanchor":"left","x":0},
+        hovermode="x unified",
+        dragmode="pan"
+    )
+    return fig
+
 def money(v,t): return f"{v:,.0f}원" if t.endswith((".KS",".KQ")) else f"${v:,.2f}"
 PAT={1:"지지반등+거래량",2:"돌파후 눌림",3:"급락후 회복",4:"20일선 눌림",5:"박스 돌파",6:"이평 수렴→확산",7:"전고점 돌파"}
 
-st.title("📡 Stock Watch v6")
-st.caption("v4 고급분석 + v5 장중분석 · 모바일 통합판")
+st.title("📡 Stock Watch v7")
+st.caption("v4 고급분석 + v5 장중분석 유지 · 모바일 확대 캔들차트")
 
 with st.sidebar:
     st.header("관심종목")
@@ -202,6 +237,8 @@ if st.session_state.watch:
     st.subheader("⚡ 장중 진입 타이밍")
     choice=st.segmented_control("분봉 선택",["5분","15분","30분","60분"],default="15분")
     iv={"5분":"5m","15분":"15m","30분":"30m","60분":"60m"}[choice]
+    bars_label=st.segmented_control("확대 범위",["30봉","60봉","120봉"],default="60봉")
+    bars={"30봉":30,"60봉":60,"120봉":120}[bars_label]
     try:
         q=intra_analyze(intraday(t,iv))
         if q:
@@ -211,9 +248,8 @@ if st.session_state.watch:
             c=st.columns(2)
             c[0].metric("RSI",f'{q["rsi"]:.1f}'); c[1].metric("거래량",f'{q["vr"]:.2f}×')
             st.write(f"단기 지지 **{money(q['sup'],t)}** · 단기 저항 **{money(q['res'],t)}**")
-            # 모바일에서 한 개의 큰 차트만
-            st.line_chart(q["x"][["Close","VWAP","EMA9","EMA20"]].tail(120),height=500)
-            st.caption("차트: 가격 · 세션 VWAP · EMA9 · EMA20")
+            st.plotly_chart(intraday_chart(q,bars),use_container_width=True,config={"displayModeBar":False,"scrollZoom":True})
+            st.caption("캔들 + VWAP + EMA9/20 + 거래량 · Y축은 선택한 봉의 실제 가격 범위에 맞춰 자동 확대")
         else: st.info("선택한 분봉 데이터가 부족합니다.")
     except Exception as e: st.warning(f"장중 데이터 조회 실패: {e}")
 
