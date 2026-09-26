@@ -63,6 +63,30 @@ def indicators(d):
     x["HH20"]=x.High.shift(1).rolling(20).max()
     return x
 
+@st.cache_data(ttl=300, show_spinner=False)
+def search_symbols(query):
+    q=(query or "").strip()
+    if len(q)<1:
+        return []
+    try:
+        results=yf.Search(q,max_results=12,news_count=0,lists_count=0,
+                          include_research=False,enable_fuzzy_query=True).quotes
+        out=[]
+        for r in results:
+            symbol=str(r.get("symbol","")).strip()
+            if not symbol:
+                continue
+            qt=str(r.get("quoteType","")).upper()
+            if qt not in ("EQUITY","ETF","MUTUALFUND","INDEX"):
+                continue
+            name=r.get("shortname") or r.get("longname") or r.get("name") or symbol
+            exch=r.get("exchDisp") or r.get("exchange") or ""
+            typ={"EQUITY":"주식","ETF":"ETF","MUTUALFUND":"펀드","INDEX":"지수"}.get(qt,qt)
+            out.append({"symbol":symbol,"name":str(name),"exchange":str(exch),"type":typ})
+        return out
+    except Exception:
+        return []
+
 @st.cache_data(ttl=120)
 def daily(t):
     d=yf.download(t,period="3y",interval="1d",auto_adjust=False,progress=False,threads=False)
@@ -243,18 +267,55 @@ def decision_text(a, intra_map, t):
 def money(v,t): return f"{v:,.0f}원" if t.endswith((".KS",".KQ")) else f"${v:,.2f}"
 PAT={1:"지지반등+거래량",2:"돌파후 눌림",3:"급락후 회복",4:"20일선 눌림",5:"박스 돌파",6:"이평 수렴→확산",7:"전고점 돌파"}
 
-st.title("📡 Stock Watch v8 · 관심종목 AI 판독")
-st.caption("관심종목을 넣고 빼며 관리 · 차트보다 결론을 먼저 보여주는 모바일 판독형")
+st.title("📡 Stock Watch v9 · 검색형 관심종목")
+st.caption("회사명/티커 검색 → ⭐ 추가 → 자동 판독 · 기존 기술분석 엔진 유지")
 
 with st.sidebar:
     st.header("⭐ 관심종목 관리")
-    nm=st.text_input("이름",placeholder="NVIDIA"); tk=st.text_input("티커",placeholder="NVDA / 005930.KS").strip().upper()
-    if st.button("⭐ 관심종목 추가",use_container_width=True) and tk:
-        st.session_state.watch[nm.strip() or tk]=tk; st.rerun()
+    st.caption("회사명이나 티커를 검색하고 결과를 눌러 추가하세요.")
+
+    query=st.text_input("🔎 종목 검색",placeholder="예: Moderna, NVDA, 삼성전자")
+    results=search_symbols(query) if query.strip() else []
+
+    if query.strip():
+        if results:
+            labels=[
+                f"{r['name']}  |  {r['symbol']}  |  {r['exchange']}  |  {r['type']}"
+                for r in results
+            ]
+            chosen_label=st.selectbox("검색 결과",labels)
+            chosen=results[labels.index(chosen_label)]
+            already=chosen["symbol"] in st.session_state.watch.values()
+            if already:
+                st.info("이미 관심종목에 들어 있습니다.")
+            elif st.button("⭐ 이 종목 관심종목에 추가",use_container_width=True):
+                # Duplicate names are disambiguated by symbol.
+                display=chosen["name"]
+                if display in st.session_state.watch and st.session_state.watch[display]!=chosen["symbol"]:
+                    display=f"{display} ({chosen['symbol']})"
+                st.session_state.watch[display]=chosen["symbol"]
+                st.rerun()
+        else:
+            st.warning("검색 결과가 없습니다. 한글 검색이 안 잡히면 영문 회사명이나 티커로 검색해 주세요.")
+
+    st.divider()
+    st.markdown("**현재 관심종목**")
     if st.session_state.watch:
-        dele=st.selectbox("삭제",["선택 안 함"]+list(st.session_state.watch))
-        if st.button("🗑️ 관심종목에서 빼기",use_container_width=True) and dele!="선택 안 함":
-            st.session_state.watch.pop(dele,None); st.rerun()
+        remove_name=st.selectbox("관심종목에서 빼기",["선택 안 함"]+list(st.session_state.watch.keys()))
+        if remove_name!="선택 안 함":
+            st.caption(f"{remove_name} · {st.session_state.watch[remove_name]}")
+        if st.button("🗑️ 선택 종목 빼기",use_container_width=True,disabled=remove_name=="선택 안 함"):
+            st.session_state.watch.pop(remove_name,None)
+            st.rerun()
+    else:
+        st.caption("등록된 관심종목이 없습니다.")
+
+    with st.expander("티커 직접 추가 · 검색이 안 될 때"):
+        nm=st.text_input("표시 이름",placeholder="예: 삼성전자")
+        tk=st.text_input("Yahoo 티커",placeholder="예: 005930.KS / NVDA").strip().upper()
+        if st.button("직접 추가",use_container_width=True) and tk:
+            st.session_state.watch[nm.strip() or tk]=tk
+            st.rerun()
 
 rows=[]; raw={}
 for n,t in st.session_state.watch.items():
