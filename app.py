@@ -187,20 +187,73 @@ def intraday_chart(q, bars=60):
     )
     return fig
 
+
+def decision_text(a, intra_map, t):
+    good=[]
+    weak=[]
+    for label,q in intra_map.items():
+        if not q: continue
+        if "🟢" in q["sig"] or "상승 유지" in q["sig"] or "눌림 확인" in q["sig"]:
+            good.append(label)
+        if "🔴" in q["sig"]:
+            weak.append(label)
+
+    confirm=max(a["res"], a["p"]*1.003)
+    chase=max(confirm*1.02, a["p"]*1.025)
+    invalid=a["invalid"]
+    entry_lo=max(a["sup"], a["p"]*.985)
+    entry_hi=min(confirm, a["p"]*1.005)
+
+    reasons=[]
+    reasons.append(f"일봉 {a['trend']} · 기술점수 {a['score']}/100")
+    if a["patterns"]:
+        reasons.append("진입패턴: "+", ".join(PAT[i] for i in a["patterns"]))
+    if good: reasons.append("장중 강세/확인: "+", ".join(good))
+    if weak: reasons.append("장중 약세: "+", ".join(weak))
+    reasons.append(f"거래량 {a['vr']:.2f}배 · RSI {a['rsi']:.1f}")
+
+    if a["trend"]=="상승" and len(good)>=2 and not weak:
+        verdict="🟢 추가매수 관찰"
+        action=f"{money(confirm,t)} 돌파/지지 확인 시 분할 접근"
+        confidence=min(92,a["score"]+10+len(good)*3)
+    elif a["verdict"].startswith("🟠"):
+        verdict="🟠 추격 금지"
+        action="현재 가격 추격보다 눌림 또는 지지 확인 대기"
+        confidence=max(55,a["score"])
+    elif a["trend"]=="하락" or len(weak)>=2:
+        verdict="🔴 진입 보류"
+        action=f"{money(invalid,t)} 부근 위험관리, 추세 회복 전 신규진입 보류"
+        confidence=min(90,60+len(weak)*7)
+    elif len(good)>=1 or a["score"]>=65:
+        verdict="🔵 확인 대기"
+        action=f"{money(confirm,t)} 돌파와 거래량 유지 확인"
+        confidence=min(85,a["score"]+5)
+    else:
+        verdict="⚪ 관망"
+        action="조건이 모일 때까지 대기"
+        confidence=max(45,a["score"])
+
+    return {
+        "verdict":verdict,"action":action,"confidence":int(confidence),
+        "entry_lo":entry_lo,"entry_hi":entry_hi,"confirm":confirm,
+        "chase":chase,"invalid":invalid,"reasons":reasons,
+        "good":good,"weak":weak
+    }
+
 def money(v,t): return f"{v:,.0f}원" if t.endswith((".KS",".KQ")) else f"${v:,.2f}"
 PAT={1:"지지반등+거래량",2:"돌파후 눌림",3:"급락후 회복",4:"20일선 눌림",5:"박스 돌파",6:"이평 수렴→확산",7:"전고점 돌파"}
 
-st.title("📡 Stock Watch v7")
-st.caption("v4 고급분석 + v5 장중분석 유지 · 모바일 확대 캔들차트")
+st.title("📡 Stock Watch v8 · 관심종목 AI 판독")
+st.caption("관심종목을 넣고 빼며 관리 · 차트보다 결론을 먼저 보여주는 모바일 판독형")
 
 with st.sidebar:
-    st.header("관심종목")
+    st.header("⭐ 관심종목 관리")
     nm=st.text_input("이름",placeholder="NVIDIA"); tk=st.text_input("티커",placeholder="NVDA / 005930.KS").strip().upper()
-    if st.button("➕ 추가",use_container_width=True) and tk:
+    if st.button("⭐ 관심종목 추가",use_container_width=True) and tk:
         st.session_state.watch[nm.strip() or tk]=tk; st.rerun()
     if st.session_state.watch:
         dele=st.selectbox("삭제",["선택 안 함"]+list(st.session_state.watch))
-        if st.button("➖ 삭제",use_container_width=True) and dele!="선택 안 함":
+        if st.button("🗑️ 관심종목에서 빼기",use_container_width=True) and dele!="선택 안 함":
             st.session_state.watch.pop(dele,None); st.rerun()
 
 rows=[]; raw={}
@@ -210,11 +263,13 @@ for n,t in st.session_state.watch.items():
         rows.append([n,t,a["verdict"],a["score"],a["trend"],round(a["rsi"],1),round(a["vr"],2)])
     except Exception: rows.append([n,t,"조회 실패",0,"-",np.nan,np.nan])
 
-st.subheader("전체 감시판")
+st.subheader("⭐ 관심종목")
+st.caption("관심종목은 왼쪽 메뉴에서 언제든 추가·삭제할 수 있습니다.")
 for r in rows:
     with st.container(border=True):
-        st.markdown(f"**{r[0]}** · `{r[1]}`")
-        c=st.columns(3); c[0].metric("판정",r[2]); c[1].metric("점수",r[3]); c[2].metric("추세",r[4])
+        st.markdown(f"### {r[0]}")
+        st.caption(f"{r[1]} · {r[4]} 추세")
+        st.markdown(f"**{r[2]}** · 종합점수 **{r[3]}/100**")
         st.caption(f"RSI {r[5]} · 거래량 {r[6]}×")
 
 if st.session_state.watch:
@@ -234,24 +289,60 @@ if st.session_state.watch:
         st.write(f"RSI 다이버전스: **{a['div']}**")
         st.line_chart(frames["일"][["Close","MA5","MA10","MA20","MA60","MA120","MA200"]].tail(220),height=430)
 
-    st.subheader("⚡ 장중 진입 타이밍")
-    choice=st.segmented_control("분봉 선택",["5분","15분","30분","60분"],default="15분")
-    iv={"5분":"5m","15분":"15m","30분":"30m","60분":"60m"}[choice]
-    bars_label=st.segmented_control("확대 범위",["30봉","60봉","120봉"],default="60봉")
-    bars={"30봉":30,"60봉":60,"120봉":120}[bars_label]
-    try:
-        q=intra_analyze(intraday(t,iv))
+    st.subheader("🎯 지금 어떻게 볼까")
+    intra_map={}
+    for label,iv in {"5분":"5m","15분":"15m","30분":"30m","60분":"60m"}.items():
+        try:
+            intra_map[label]=intra_analyze(intraday(t,iv))
+        except Exception:
+            intra_map[label]=None
+
+    dec=decision_text(a,intra_map,t)
+    if dec["verdict"].startswith("🟢"):
+        st.success(f"### {dec['verdict']}")
+    elif dec["verdict"].startswith("🔴"):
+        st.error(f"### {dec['verdict']}")
+    elif dec["verdict"].startswith("🟠"):
+        st.warning(f"### {dec['verdict']}")
+    else:
+        st.info(f"### {dec['verdict']}")
+
+    st.markdown(f"**행동:** {dec['action']}")
+    st.progress(dec["confidence"]/100, text=f"판단 신뢰도 {dec['confidence']}/100")
+
+    c=st.columns(2)
+    c[0].metric("관찰/진입 후보",f"{money(dec['entry_lo'],t)} ~ {money(dec['entry_hi'],t)}")
+    c[1].metric("확인 가격",money(dec["confirm"],t))
+    c=st.columns(2)
+    c[0].metric("추격 주의",money(dec["chase"],t))
+    c[1].metric("무효/위험",money(dec["invalid"],t))
+
+    st.markdown("**왜 이렇게 봤나**")
+    for reason in dec["reasons"]:
+        st.write("• "+reason)
+
+    st.markdown("**5·15·30·60분 자동 판독**")
+    cols=st.columns(2)
+    for i,label in enumerate(["5분","15분","30분","60분"]):
+        q=intra_map.get(label)
+        with cols[i%2]:
+            if q:
+                st.markdown(f"**{label}** {q['sig']}")
+                st.caption(f"VWAP {money(q['vwap'],t)} · RSI {q['rsi']:.0f} · 거래량 {q['vr']:.2f}×")
+            else:
+                st.markdown(f"**{label}** 데이터 부족")
+
+    with st.expander("📊 차트가 필요할 때만 보기",expanded=False):
+        choice=st.segmented_control("분봉",["5분","15분","30분","60분"],default="15분")
+        bars_label=st.segmented_control("범위",["30봉","60봉","120봉"],default="60봉")
+        q=intra_map.get(choice)
         if q:
-            st.markdown(f"### {q['sig']}")
-            c=st.columns(2)
-            c[0].metric("가격",money(q["p"],t)); c[1].metric("VWAP",money(q["vwap"],t))
-            c=st.columns(2)
-            c[0].metric("RSI",f'{q["rsi"]:.1f}'); c[1].metric("거래량",f'{q["vr"]:.2f}×')
-            st.write(f"단기 지지 **{money(q['sup'],t)}** · 단기 저항 **{money(q['res'],t)}**")
-            st.plotly_chart(intraday_chart(q,bars),use_container_width=True,config={"displayModeBar":False,"scrollZoom":True})
-            st.caption("캔들 + VWAP + EMA9/20 + 거래량 · Y축은 선택한 봉의 실제 가격 범위에 맞춰 자동 확대")
-        else: st.info("선택한 분봉 데이터가 부족합니다.")
-    except Exception as e: st.warning(f"장중 데이터 조회 실패: {e}")
+            bars={"30봉":30,"60봉":60,"120봉":120}[bars_label]
+            st.plotly_chart(intraday_chart(q,bars),use_container_width=True,
+                            config={"displayModeBar":False,"scrollZoom":True})
+            st.caption("캔들 + VWAP + EMA9/20 + 거래량")
+        else:
+            st.info("선택한 분봉 데이터가 부족합니다.")
 
     with st.expander("📆 일·주·월 큰 추세"):
         k=st.radio("큰 차트",["일","주","월"],horizontal=True)
