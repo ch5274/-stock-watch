@@ -3,9 +3,11 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
+import json
+from pathlib import Path
 from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="Stock Watch V10.2", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Stock Watch V10.3", page_icon="📡", layout="wide")
 
 # 모바일 폭을 최대한 활용
 st.markdown("""
@@ -113,64 +115,6 @@ def divergence(x,n=20):
     if z.Close.iloc[h:].max()>z.Close.iloc[:h].max() and z.RSI.iloc[h:].max()<z.RSI.iloc[:h].max(): return "하락 후보"
     return "없음"
 
-
-def v10_score_engine(x,a,p,ma,rv,vr,patterns,rebound,sup,res):
-    def val(k,default=0):
-        try:
-            v=a[k]
-            return float(v) if pd.notna(v) else default
-        except Exception:
-            return default
-
-    trend=0
-    trend += 7 if p>ma[20] else 0
-    trend += 5 if ma[20]>ma[60] else 0
-    trend += 4 if ma[60]>ma[120] else 0
-    trend += 4 if ma[5]>ma[10]>ma[20] else 0
-    trend += 3 if val("MACD")>val("MACD_SIG") else 0
-    trend += 2 if val("ROC")>0 else 0
-    trend=min(25,trend)
-
-    flow=0
-    flow += 6 if vr>=1.5 else 4 if vr>=1.2 else 2 if vr>=1.0 else 0
-    flow += 5 if val("MFI",50)>=55 else 3 if val("MFI",50)>=50 else 0
-    try:
-        flow += 5 if float(a.OBV)>float(x.OBV.rolling(20).mean().iloc[-1]) else 0
-    except Exception:
-        pass
-    flow += 4 if val("PDI")>val("MDI") and val("ADX")>=20 else 0
-    flow=min(20,flow)
-
-    position=0
-    ds=abs(p-sup)/p if p else 1
-    d20=abs(p-ma[20])/p if p else 1
-    d60=abs(p-ma[60])/p if p else 1
-    position += 7 if ds<=.04 else 4 if ds<=.07 else 0
-    position += 6 if d20<=.03 else 3 if d20<=.06 else 0
-    position += 4 if d60<=.04 else 2 if d60<=.07 else 0
-    position += 3 if rebound else 0
-    if p>ma[20]*1.12: position-=6
-    position=max(0,min(20,position))
-
-    pattern=min(12,len(patterns)*4)
-    pattern += 5 if p>res and vr>=1.3 else 0
-    pattern += 3 if rebound and vr>=1.1 else 0
-    pattern=min(20,pattern)
-
-    risk=15
-    atr=val("ATR_PCT")
-    if rv>=78: risk-=6
-    elif rv>=72: risk-=3
-    if p>ma[20]*1.10: risk-=4
-    if atr>=8: risk-=4
-    elif atr>=5: risk-=2
-    if val("MACD")<val("MACD_SIG"): risk-=2
-    risk=max(0,min(15,risk))
-
-    axes={"추세":int(trend),"수급":int(flow),"위치":int(position),
-          "패턴":int(pattern),"위험":int(risk)}
-    return int(round(sum(axes.values()))),axes
-
 def analyze(x):
     x=x.dropna(subset=["Close"]); a=x.iloc[-1]; b=x.iloc[-2]; p=float(a.Close)
     def f(k,default=0): return float(a[k]) if k in a and pd.notna(a[k]) else default
@@ -192,7 +136,16 @@ def analyze(x):
     s7=p>res and vr>=1.3
     patterns=[i for i,v in enumerate((s1,s2,s3,s4,s5,s6,s7),1) if v]
     trend="상승" if p>ma[20]>ma[60] else ("하락" if p<ma[20]<ma[60] else "혼조")
-    score,axes=v10_score_engine(x,a,p,ma,rv,vr,patterns,rebound,sup,res)
+    score=50+(12 if trend=="상승" else -12 if trend=="하락" else 0)
+    score+=7 if ma[5]>ma[10]>ma[20] else 0
+    score+=7 if f("MACD")>f("MACD_SIG") and f("MACD_H")>float(x.MACD_H.iloc[-2]) else -3
+    score+=5 if 45<=rv<=68 else -6 if rv>=75 else 2 if rv<35 else 0
+    score+=6 if f("PDI")>f("MDI") and f("ADX")>=20 else 0
+    score+=5 if f("MFI",50)>50 else -2
+    score+=5 if x.OBV.iloc[-1]>x.OBV.rolling(20).mean().iloc[-1] else -2
+    score+=7 if vr>=1.2 and rebound else -5 if vr>=1.5 and not rebound else 0
+    score+=10 if patterns else 0
+    score=max(0,min(100,score))
     if patterns: verdict="🟢 추가매수 확인"
     elif rv>=72 or p>ma[20]*1.10: verdict="🟠 추격 금지"
     elif p<sup*.97 or (p<ma[60] and f("MACD")<f("MACD_SIG")): verdict="🔴 손상/위험"
@@ -201,7 +154,7 @@ def analyze(x):
     return dict(p=p,ma=ma,rsi=rv,vr=vr,sup=sup,res=res,trend=trend,score=score,verdict=verdict,
                 macd="강세" if f("MACD")>f("MACD_SIG") else "약세",adx=f("ADX"),mfi=f("MFI",50),
                 stoch=f("STOCH_RSI",50),cci=f("CCI"),willr=f("WILLR",-50),roc=f("ROC"),
-                atr=f("ATR_PCT"),div=divergence(x),patterns=patterns,invalid=min(sup,ma[60])*.97,axes=axes)
+                atr=f("ATR_PCT"),div=divergence(x),patterns=patterns,invalid=min(sup,ma[60])*.97)
 
 def intra_analyze(d):
     if d is None or len(d)<25: return None
@@ -306,24 +259,46 @@ def decision_text(a, intra_map, t):
         action="조건이 모일 때까지 대기"
         confidence=max(45,a["score"])
 
-    active=sum(1 for q in intra_map.values() if q)
-    positive=len(good)
-    agreement=int(round(100*positive/active)) if active else 0
-    signal_count=f"{positive}/{active}" if active else "0/0"
-
     return {
         "verdict":verdict,"action":action,"confidence":int(confidence),
-        "agreement":agreement,"signal_count":signal_count,
         "entry_lo":entry_lo,"entry_hi":entry_hi,"confirm":confirm,
         "chase":chase,"invalid":invalid,"reasons":reasons,
         "good":good,"weak":weak
     }
 
+
+KIWOOM_RT_FILE = Path("/home/opc/kiwoom_realtime.json")
+
+def yahoo_to_kiwoom_code(ticker):
+    t=(ticker or "").upper().strip()
+    if t.endswith((".KS",".KQ")):
+        return t.split(".")[0]
+    return None
+
+def read_kiwoom_realtime(ticker):
+    code=yahoo_to_kiwoom_code(ticker)
+    if not code or not KIWOOM_RT_FILE.exists():
+        return None
+    try:
+        payload=json.loads(KIWOOM_RT_FILE.read_text(encoding="utf-8"))
+        item=payload.get(code)
+        if not isinstance(item,dict):
+            return None
+        return item
+    except Exception:
+        return None
+
+def rt_num(v):
+    try:
+        return abs(float(str(v).replace(",","").replace("+","")))
+    except Exception:
+        return None
+
 def money(v,t): return f"{v:,.0f}원" if t.endswith((".KS",".KQ")) else f"${v:,.2f}"
 PAT={1:"지지반등+거래량",2:"돌파후 눌림",3:"급락후 회복",4:"20일선 눌림",5:"박스 돌파",6:"이평 수렴→확산",7:"전고점 돌파"}
 
-st.title("📡 Stock Watch V10.2 · 검색형 관심종목")
-st.caption("V9 사용성 유지 · 5축 100점 엔진 + 신호 일치도 + 진입/위험 분리")
+st.title("📡 Stock Watch V10.3 · 키움 실시간")
+st.caption("V9 분석엔진 유지 · 국내주식 키움 실시간 브리지 · 미국주식 Yahoo 보조")
 
 with st.sidebar:
     st.header("⭐ 관심종목 관리")
@@ -386,11 +361,6 @@ for r in rows:
         st.markdown(f"### {r[0]}")
         st.caption(f"{r[1]} · {r[4]} 추세")
         st.markdown(f"**{r[2]}** · 종합점수 **{r[3]}/100**")
-        try:
-            _a=analyze(timeframe(raw[r[1]],"일")); _x=_a["axes"]
-            st.caption(f"추세 {_x['추세']}/25 · 수급 {_x['수급']}/20 · 위치 {_x['위치']}/20 · 패턴 {_x['패턴']}/20 · 위험 {_x['위험']}/15")
-        except Exception:
-            pass
         st.caption(f"RSI {r[5]} · 거래량 {r[6]}×")
 
 if st.session_state.watch:
@@ -399,9 +369,14 @@ if st.session_state.watch:
     A={k:analyze(v) for k,v in frames.items() if len(v)>25}; a=A["일"]
 
     st.subheader(f"{name} · {t}")
-    c=st.columns(3); c[0].metric("가격",money(a["p"],t)); c[1].metric("점수",f'{a["score"]}/100'); c[2].metric("판정",a["verdict"])
-    ax=a["axes"]
-    st.caption(f"추세 {ax['추세']}/25 · 수급 {ax['수급']}/20 · 위치 {ax['위치']}/20 · 패턴 {ax['패턴']}/20 · 위험 {ax['위험']}/15")
+    rt=read_kiwoom_realtime(t)
+    rt_price=rt_num(rt.get("price")) if rt else None
+    shown_price=rt_price if rt_price is not None else a["p"]
+    c=st.columns(3); c[0].metric("가격",money(shown_price,t)); c[1].metric("점수",f'{a["score"]}/100'); c[2].metric("판정",a["verdict"])
+    if rt:
+        st.success(f"📡 키움 실시간 연결 · {rt.get('updated_at','수신 중')}")
+    elif t.endswith((".KS",".KQ")):
+        st.caption("키움 실시간 대기 · 연결 전에는 Yahoo 가격 표시")
     st.write("**월→주→일:** "+" · ".join(f"{k} {q['trend']}({q['score']})" for k,q in reversed(list(A.items()))))
     st.write(f"지지 **{money(a['sup'],t)}** · 저항 **{money(a['res'],t)}** · 무효 **{money(a['invalid'],t)}**")
     if a["patterns"]: st.success("패턴: "+" / ".join(PAT[i] for i in a["patterns"]))
@@ -432,7 +407,6 @@ if st.session_state.watch:
 
     st.markdown(f"**행동:** {dec['action']}")
     st.progress(dec["confidence"]/100, text=f"판단 신뢰도 {dec['confidence']}/100")
-    st.caption(f"분봉 신호 일치도 {dec['signal_count']} · 강세 일치 {dec['agreement']}%")
 
     c=st.columns(2)
     c[0].metric("관찰/진입 후보",f"{money(dec['entry_lo'],t)} ~ {money(dec['entry_hi'],t)}")
@@ -472,4 +446,4 @@ if st.session_state.watch:
         k=st.radio("큰 차트",["일","주","월"],horizontal=True)
         st.line_chart(frames[k][["Close","MA20","MA60"]].tail(160 if k=="일" else 90),height=430)
 
-st.warning("V10.2 · 현재 장중 데이터는 Yahoo 기반이라 지연/누락될 수 있습니다. 실제 체결·외국인/기관/프로그램·공매도·알림·주문은 실시간 API 연결 단계에서 추가합니다.")
+st.warning("V10.3 · 국내주식 현재가는 Oracle의 키움 실시간 브리지를 우선 사용합니다. 분봉/기술지표는 아직 Yahoo 이력 데이터 기반이며, 다음 단계에서 키움 체결 누적으로 5·15·30·60분봉까지 완전 실시간화합니다.")
