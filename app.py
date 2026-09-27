@@ -2,10 +2,9 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import plotly.graph_objects as go
-import json
 import os
 import requests
+import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Stock Watch v6", page_icon="📡", layout="wide")
@@ -24,6 +23,101 @@ div[data-testid="stMetricValue"] {font-size:1.15rem;}
 </style>
 """, unsafe_allow_html=True)
 
+
+BRIDGE_URL = os.getenv("KIWOOM_BRIDGE_URL", "").rstrip("/")
+BRIDGE_TOKEN = os.getenv("KIWOOM_BRIDGE_TOKEN", "")
+
+def bridge_headers():
+    return {"X-Bridge-Token": BRIDGE_TOKEN} if BRIDGE_TOKEN else {}
+
+def bridge_get(path, **params):
+    if not BRIDGE_URL:
+        return None
+    try:
+        r = requests.get(
+            f"{BRIDGE_URL}{path}",
+            headers=bridge_headers(),
+            params=params,
+            timeout=10,
+        )
+        return r.json() if r.ok else None
+    except Exception:
+        return None
+
+def bridge_post(path, payload):
+    if not BRIDGE_URL:
+        return None
+    try:
+        r = requests.post(
+            f"{BRIDGE_URL}{path}",
+            headers=bridge_headers(),
+            json=payload,
+            timeout=10,
+        )
+        return r.json() if r.ok else None
+    except Exception:
+        return None
+
+def code_from_ticker(ticker):
+    t = str(ticker or "").strip().upper()
+    if t.endswith(".KS") or t.endswith(".KQ"):
+        t = t[:-3]
+    return t
+
+def is_korean_ticker(ticker):
+    t = code_from_ticker(ticker)
+    return t.isdigit() and len(t) == 6
+
+def yahoo_fallback_ticker(ticker):
+    t = str(ticker or "").strip().upper()
+    if t.endswith((".KS",".KQ")):
+        return t
+    code = code_from_ticker(t)
+    if code.isdigit() and len(code) == 6:
+        xs = kiwoom_search(code)
+        for x in xs:
+            if str(x.get("code","")).replace("A","") == code:
+                ex = str(x.get("exchange","") or x.get("marketName","")).lower()
+                if "코스닥" in ex or "kosdaq" in ex:
+                    return code + ".KQ"
+                return code + ".KS"
+    return t
+
+def bars_to_df(rows):
+    if not rows:
+        return pd.DataFrame(columns=["Open","High","Low","Close","Volume"])
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return pd.DataFrame(columns=["Open","High","Low","Close","Volume"])
+    if "ts" in df.columns:
+        df["ts"] = pd.to_datetime(df["ts"].astype(str), errors="coerce")
+        df = df.dropna(subset=["ts"]).set_index("ts")
+    df = df.rename(columns={
+        "open":"Open","high":"High","low":"Low","close":"Close","volume":"Volume"
+    })
+    for c in ["Open","High","Low","Close","Volume"]:
+        if c not in df.columns:
+            df[c] = np.nan
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df[["Open","High","Low","Close","Volume"]].dropna(subset=["Close"]).sort_index()
+
+def kiwoom_search(query):
+    x = bridge_get("/search", q=query, limit=20)
+    return x.get("results", []) if isinstance(x, dict) else []
+
+def kiwoom_watch_add(ticker):
+    if is_korean_ticker(ticker):
+        return bridge_post("/watch/add", {"code": code_from_ticker(ticker)})
+    return None
+
+def kiwoom_watch_remove(ticker):
+    if is_korean_ticker(ticker):
+        return bridge_post("/watch/remove", {"code": code_from_ticker(ticker)})
+    return None
+
+def kiwoom_watch_load():
+    x = bridge_get("/watch")
+    return x.get("codes", []) if isinstance(x, dict) else []
 DEFAULTS={"전진건설로봇":"079900.KS","페니트리움바이오":"187660.KQ","현대바이오사이언스":"048410.KQ","Moderna":"MRNA"}
 if "watch" not in st.session_state: st.session_state.watch=DEFAULTS.copy()
 
@@ -68,39 +162,78 @@ def indicators(d):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def search_symbols(query):
-    q=(query or "").strip()
-    if len(q)<1:
+    q = (query or "").strip()
+    if not q:
         return []
+
+    kr = kiwoom_search(q)
+    if kr:
+        return [{
+            "symbol": str(x.get("code","")).replace("A",""),
+            "name": x.get("name",""),
+            "exchange": x.get("exchange") or x.get("marketName") or "KRX",
+            "type": "주식",
+            "market": "KR"
+        } for x in kr]
+
     try:
-        results=yf.Search(q,max_results=12,news_count=0,lists_count=0,
-                          include_research=False,enable_fuzzy_query=True).quotes
-        out=[]
-        for r in results:
-            symbol=str(r.get("symbol","")).strip()
-            if not symbol:
+        rs = yf.Search(
+            q, max_results=12, news_count=0, lists_count=0,
+            include_research=False, enable_fuzzy_query=True
+        ).quotes
+        out = []
+        for r in rs:
+            sym = str(r.get("symbol","")).strip()
+            qt = str(r.get("quoteType","")).upper()
+            if not sym or qt not in ("EQUITY","ETF","MUTUALFUND","INDEX"):
                 continue
-            qt=str(r.get("quoteType","")).upper()
-            if qt not in ("EQUITY","ETF","MUTUALFUND","INDEX"):
-                continue
-            name=r.get("shortname") or r.get("longname") or r.get("name") or symbol
-            exch=r.get("exchDisp") or r.get("exchange") or ""
-            typ={"EQUITY":"주식","ETF":"ETF","MUTUALFUND":"펀드","INDEX":"지수"}.get(qt,qt)
-            out.append({"symbol":symbol,"name":str(name),"exchange":str(exch),"type":typ})
+            name = r.get("shortname") or r.get("longname") or r.get("name") or sym
+            exch = r.get("exchDisp") or r.get("exchange") or ""
+            out.append({
+                "symbol": sym,
+                "name": str(name),
+                "exchange": str(exch),
+                "type": qt,
+                "market": "OVERSEAS"
+            })
         return out
     except Exception:
         return []
 
 @st.cache_data(ttl=120)
 def daily(t):
-    d=yf.download(t,period="3y",interval="1d",auto_adjust=False,progress=False,threads=False)
-    if isinstance(d.columns,pd.MultiIndex): d.columns=d.columns.get_level_values(0)
+    if is_korean_ticker(t):
+        x = bridge_get(f"/daily/{code_from_ticker(t)}", limit=600)
+        d = bars_to_df(x.get("bars", []) if isinstance(x, dict) else [])
+        if not d.empty:
+            return d
+
+    yt = yahoo_fallback_ticker(t)
+    d = yf.download(
+        yt, period="3y", interval="1d",
+        auto_adjust=False, progress=False, threads=False
+    )
+    if isinstance(d.columns, pd.MultiIndex):
+        d.columns = d.columns.get_level_values(0)
     return d.dropna(subset=["Close"])
 
-@st.cache_data(ttl=60)
-def intraday(t,iv):
-    period="5d" if iv in ("5m","15m","30m") else "1mo"
-    d=yf.download(t,period=period,interval=iv,auto_adjust=False,progress=False,threads=False,prepost=False)
-    if isinstance(d.columns,pd.MultiIndex): d.columns=d.columns.get_level_values(0)
+@st.cache_data(ttl=30)
+def intraday(t, iv):
+    if is_korean_ticker(t):
+        minute = int(str(iv).replace("m",""))
+        x = bridge_get(f"/chart/{code_from_ticker(t)}/{minute}", limit=300)
+        d = bars_to_df(x.get("bars", []) if isinstance(x, dict) else [])
+        if not d.empty:
+            return d
+
+    yt = yahoo_fallback_ticker(t)
+    period = "5d" if iv in ("5m","15m","30m") else "1mo"
+    d = yf.download(
+        yt, period=period, interval=iv,
+        auto_adjust=False, progress=False, threads=False, prepost=False
+    )
+    if isinstance(d.columns, pd.MultiIndex):
+        d.columns = d.columns.get_level_values(0)
     return d.dropna(subset=["Close"])
 
 def timeframe(d,k):
@@ -267,45 +400,31 @@ def decision_text(a, intra_map, t):
         "good":good,"weak":weak
     }
 
-
-KIWOOM_BRIDGE_URL=os.getenv("KIWOOM_BRIDGE_URL","").rstrip("/")
-KIWOOM_BRIDGE_TOKEN=os.getenv("KIWOOM_BRIDGE_TOKEN","")
-
-def _kiwoom_search(query):
-    if not KIWOOM_BRIDGE_URL or not query.strip():
-        return []
-    try:
-        headers={"X-Bridge-Token":KIWOOM_BRIDGE_TOKEN} if KIWOOM_BRIDGE_TOKEN else {}
-        r=requests.get(f"{KIWOOM_BRIDGE_URL}/search",
-                       params={"q":query.strip(),"limit":20},
-                       headers=headers,timeout=5)
-        if r.ok: return r.json().get("results",[])
-    except Exception:
-        pass
-    return []
-
-def money(v,t): return f"{v:,.0f}원" if t.endswith((".KS",".KQ")) else f"${v:,.2f}"
+def money(v,t): return f"{v:,.0f}원" if is_korean_ticker(t) else f"${v:,.2f}"
 PAT={1:"지지반등+거래량",2:"돌파후 눌림",3:"급락후 회복",4:"20일선 눌림",5:"박스 돌파",6:"이평 수렴→확산",7:"전고점 돌파"}
 
-st.title("📡 Stock Watch V9.2 · Kiwoom 종목검색 · 검색형 관심종목")
+st.title("📡 Stock Watch v9 · 검색형 관심종목")
 st.caption("회사명/티커 검색 → ⭐ 추가 → 자동 판독 · 기존 기술분석 엔진 유지")
+if BRIDGE_URL:
+    st.caption("✅ 국내 검색은 키움 연결 · 차트는 키움 우선, 미응답 시 기존 데이터로 자동 대체")
+else:
+    st.caption("⚠️ 국내주식 키움 브리지 미연결")
 
 with st.sidebar:
     st.header("⭐ 관심종목 관리")
     st.caption("회사명이나 티커를 검색하고 결과를 눌러 추가하세요.")
 
     query=st.text_input("🔎 종목 검색",placeholder="예: Moderna, NVDA, 삼성전자")
-    results=_kiwoom_search(query) if query.strip() else []
+    results=search_symbols(query) if query.strip() else []
 
     if query.strip():
         if results:
             labels=[
-                f"{r.get('name','')}  |  {r.get('symbol',r.get('code',''))}  |  {r.get('exchange','KRX')}"
+                f"{r['name']}  |  {r['symbol']}  |  {r['exchange']}  |  {r['type']}"
                 for r in results
             ]
             chosen_label=st.selectbox("검색 결과",labels)
             chosen=results[labels.index(chosen_label)]
-            chosen_symbol=chosen.get('symbol',chosen.get('code',''))
             already=chosen["symbol"] in st.session_state.watch.values()
             if already:
                 st.info("이미 관심종목에 들어 있습니다.")
@@ -315,6 +434,8 @@ with st.sidebar:
                 if display in st.session_state.watch and st.session_state.watch[display]!=chosen["symbol"]:
                     display=f"{display} ({chosen['symbol']})"
                 st.session_state.watch[display]=chosen["symbol"]
+                if chosen.get("market")=="KR":
+                    kiwoom_watch_add(chosen["symbol"])
                 st.rerun()
         else:
             st.warning("검색 결과가 없습니다. 한글 검색이 안 잡히면 영문 회사명이나 티커로 검색해 주세요.")
@@ -326,14 +447,17 @@ with st.sidebar:
         if remove_name!="선택 안 함":
             st.caption(f"{remove_name} · {st.session_state.watch[remove_name]}")
         if st.button("🗑️ 선택 종목 빼기",use_container_width=True,disabled=remove_name=="선택 안 함"):
+            old_ticker=st.session_state.watch.get(remove_name)
             st.session_state.watch.pop(remove_name,None)
+            if old_ticker:
+                kiwoom_watch_remove(old_ticker)
             st.rerun()
     else:
         st.caption("등록된 관심종목이 없습니다.")
 
     with st.expander("티커 직접 추가 · 검색이 안 될 때"):
         nm=st.text_input("표시 이름",placeholder="예: 삼성전자")
-        tk=st.text_input("Yahoo 티커",placeholder="예: 005930.KS / NVDA").strip().upper()
+        tk=st.text_input("종목코드/티커",placeholder="예: 005930 / NVDA").strip().upper()
         if st.button("직접 추가",use_container_width=True) and tk:
             st.session_state.watch[nm.strip() or tk]=tk
             st.rerun()
