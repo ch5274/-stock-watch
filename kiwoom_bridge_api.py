@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 WATCH=Path("/home/opc/kiwoom_watchlist.json")
 QUOTES=Path("/home/opc/kiwoom_realtime.json")
-TICKS=Path("/home/opc/kiwoom_ticks.jsonl")
+SYMBOLS=Path("/home/opc/kiwoom_symbols.json")
 TOKEN=os.getenv("KIWOOM_BRIDGE_TOKEN","")
 app=FastAPI(title="Stock Watch Kiwoom Bridge")
 
@@ -14,7 +14,7 @@ class Code(BaseModel):
     code:str
 
 def auth(x_bridge_token):
-    if TOKEN and x_bridge_token != TOKEN:
+    if TOKEN and x_bridge_token!=TOKEN:
         raise HTTPException(401,"unauthorized")
 
 def load_watch():
@@ -31,64 +31,47 @@ def save_watch(codes):
 @app.get("/health")
 def health(): return {"ok":True}
 
+@app.get("/search")
+def search(q:str="",limit:int=20,x_bridge_token:str|None=Header(default=None)):
+    auth(x_bridge_token)
+    q=q.strip().lower()
+    if not q: return {"results":[]}
+    try: data=json.loads(SYMBOLS.read_text(encoding="utf-8"))
+    except Exception: return {"results":[]}
+    result=[]
+    for x in data:
+        name=str(x.get("name",""))
+        code=str(x.get("code","")).zfill(6)
+        if q in name.lower() or q in code:
+            result.append({"name":name,"symbol":code,"code":code,
+                           "exchange":x.get("exchange","KRX")})
+            if len(result)>=min(max(limit,1),50): break
+    return {"results":result}
+
 @app.get("/quote/{code}")
-def quote(code:str, x_bridge_token:str|None=Header(default=None)):
+def quote(code:str,x_bridge_token:str|None=Header(default=None)):
     auth(x_bridge_token)
     try: q=json.loads(QUOTES.read_text(encoding="utf-8"))
     except Exception: q={}
     return q.get(code.zfill(6),{})
 
-@app.get("/watch")
-def watch(x_bridge_token:str|None=Header(default=None)):
-    auth(x_bridge_token); return {"codes":load_watch()}
-
 @app.post("/watch/add")
-def add(body:Code, x_bridge_token:str|None=Header(default=None)):
-    auth(x_bridge_token); c=body.code.strip().zfill(6); x=load_watch()
+def add(body:Code,x_bridge_token:str|None=Header(default=None)):
+    auth(x_bridge_token)
+    c=body.code.strip().replace("A","").zfill(6)
+    x=load_watch()
     if c not in x: x.append(c); save_watch(x)
-    return {"ok":True,"message":f"{c} 감시 추가","codes":x}
+    return {"ok":True,"codes":x}
 
 @app.post("/watch/remove")
-def remove(body:Code, x_bridge_token:str|None=Header(default=None)):
-    auth(x_bridge_token); c=body.code.strip().zfill(6); x=[v for v in load_watch() if v!=c]
-    save_watch(x); return {"ok":True,"message":f"{c} 감시 삭제","codes":x}
-
-
-def _num(v):
-    try: return abs(float(str(v).replace(",","").replace("+","")))
-    except Exception: return None
-
-def _bars(code, minutes, limit):
-    import pandas as pd
-    rows=[]
-    if not TICKS.exists(): return []
-    # Read tail only to keep the bridge light.
-    with TICKS.open("rb") as f:
-        try:
-            f.seek(0,2); size=f.tell(); f.seek(max(0,size-4_000_000))
-            if f.tell()>0: f.readline()
-        except Exception: f.seek(0)
-        for b in f:
-            try:
-                x=json.loads(b.decode("utf-8"))
-                if x.get("code")==code:
-                    p=_num(x.get("price")); v=_num(x.get("volume")) or 0
-                    if p is not None: rows.append((x["ts"],p,v))
-            except Exception: pass
-    if not rows: return []
-    df=pd.DataFrame(rows,columns=["ts","price","volume"])
-    df["ts"]=pd.to_datetime(df["ts"])
-    df=df.set_index("ts").sort_index()
-    rule=f"{int(minutes)}min"
-    o=df["price"].resample(rule).ohlc()
-    vol=df["volume"].resample(rule).sum().rename("volume")
-    z=o.join(vol).dropna().tail(limit).reset_index()
-    return [{"ts":r.ts.isoformat(),"open":r.open,"high":r.high,"low":r.low,
-             "close":r.close,"volume":r.volume} for r in z.itertuples()]
-
-@app.get("/bars/{code}/{minutes}")
-def bars(code:str, minutes:int, limit:int=200, x_bridge_token:str|None=Header(default=None)):
+def remove(body:Code,x_bridge_token:str|None=Header(default=None)):
     auth(x_bridge_token)
-    if minutes not in (1,5,15,30,60):
-        raise HTTPException(400,"minutes must be 1,5,15,30,60")
-    return {"code":code.zfill(6),"minutes":minutes,"bars":_bars(code.zfill(6),minutes,min(limit,500))}
+    c=body.code.strip().replace("A","").zfill(6)
+    x=[v for v in load_watch() if v!=c]
+    save_watch(x)
+    return {"ok":True,"codes":x}
+
+@app.get("/watch")
+def watch(x_bridge_token:str|None=Header(default=None)):
+    auth(x_bridge_token)
+    return {"codes":load_watch()}

@@ -1,17 +1,14 @@
-# Stock Watch V9 + Kiwoom Baseline
+# Stock Watch V9.2 · Kiwoom 중심 기준본
 
-이 저장소는 V9를 기준본으로 고정한 정리 버전입니다.
+V9 화면과 기존 분석엔진을 유지하면서 종목검색을 Yahoo에서 분리했습니다.
 
-유지:
-- V9 검색형 관심종목
-- 종목 추가/삭제
-- 기존 차트/기술분석
-- 기존 점수/판정/전체 점검
+- 종목명 일부/6자리 코드 검색: Oracle symbol cache
+- 실제 현재가/실시간 데이터: 기존 Kiwoom 실시간 엔진
+- 관심종목 추가/삭제: Kiwoom bridge watchlist
+- App Key/Secret은 GitHub에 포함하지 않음
 
-추가:
-- 국내주식의 키움 실시간 현재가를 읽어 표시하는 최소 브리지
+Oracle 최초 1회:
+python3 build_kiwoom_symbol_cache.py
 
-중요:
-- V9의 분석엔진을 재설계하지 않았습니다.
-- 키움 실시간 체결/분봉 생성은 다음 단계에서 별도로 검증합니다.
-- App Key/Secret은 GitHub에 포함하지 않습니다.
+주의:
+종목명/코드 목록은 KRX 상장 마스터를 캐시한 것이고, 가격·실시간 시세의 데이터 소스는 Kiwoom입니다.
