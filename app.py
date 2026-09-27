@@ -6,10 +6,10 @@ import plotly.graph_objects as go
 import json
 import os
 import requests
-from pathlib import Path
+
 from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="Stock Watch V10.5", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Stock Watch v6", page_icon="📡", layout="wide")
 
 # 모바일 폭을 최대한 활용
 st.markdown("""
@@ -269,125 +269,32 @@ def decision_text(a, intra_map, t):
     }
 
 
-KIWOOM_RT_FILE = Path("/home/opc/kiwoom_realtime.json")
-BRIDGE_URL = os.getenv("KIWOOM_BRIDGE_URL", "").rstrip("/")
-BRIDGE_TOKEN = os.getenv("KIWOOM_BRIDGE_TOKEN", "")
+KIWOOM_BRIDGE_URL = os.getenv("KIWOOM_BRIDGE_URL", "").rstrip("/")
+KIWOOM_BRIDGE_TOKEN = os.getenv("KIWOOM_BRIDGE_TOKEN", "")
 
-def yahoo_to_kiwoom_code(ticker):
+def _kiwoom_code(ticker):
     t=(ticker or "").upper().strip()
-    if t.endswith((".KS",".KQ")):
-        return t.split(".")[0]
-    return None
+    return t.split(".")[0] if t.endswith((".KS",".KQ")) else None
 
-def bridge_headers():
-    return {"X-Bridge-Token": BRIDGE_TOKEN} if BRIDGE_TOKEN else {}
-
-def bridge_watch(action, ticker):
-    code=yahoo_to_kiwoom_code(ticker)
-    if not code or not BRIDGE_URL:
-        return False, "국내주식/Oracle 브리지 설정 필요"
-    try:
-        r=requests.post(f"{BRIDGE_URL}/watch/{action}", json={"code":code},
-                        headers=bridge_headers(), timeout=5)
-        r.raise_for_status()
-        return True, r.json().get("message","완료")
-    except Exception as e:
-        return False, f"Oracle 연결 실패: {e}"
-
-def read_kiwoom_realtime(ticker):
-    code=yahoo_to_kiwoom_code(ticker)
-    if not code:
-        return None
-    if BRIDGE_URL:
-        try:
-            r=requests.get(f"{BRIDGE_URL}/quote/{code}",headers=bridge_headers(),timeout=3)
-            if r.ok:
-                x=r.json()
-                return x if x.get("price") is not None else None
-        except Exception:
-            pass
-    if KIWOOM_RT_FILE.exists():
-        try:
-            payload=json.loads(KIWOOM_RT_FILE.read_text(encoding="utf-8"))
-            item=payload.get(code)
-            return item if isinstance(item,dict) else None
-        except Exception:
-            pass
-    return None
-
-
-def fetch_kiwoom_bars(ticker, minutes, limit=200):
-    code=yahoo_to_kiwoom_code(ticker)
-    if not code or not BRIDGE_URL:
+def _kiwoom_quote(ticker):
+    code=_kiwoom_code(ticker)
+    if not code or not KIWOOM_BRIDGE_URL:
         return None
     try:
-        r=requests.get(f"{BRIDGE_URL}/bars/{code}/{minutes}",
-                       params={"limit":limit},headers=bridge_headers(),timeout=6)
-        if not r.ok: return None
-        rows=r.json().get("bars",[])
-        if not rows: return None
-        df=pd.DataFrame(rows)
-        df["ts"]=pd.to_datetime(df["ts"])
-        df=df.set_index("ts")
-        return df
+        headers={"X-Bridge-Token":KIWOOM_BRIDGE_TOKEN} if KIWOOM_BRIDGE_TOKEN else {}
+        r=requests.get(f"{KIWOOM_BRIDGE_URL}/quote/{code}",headers=headers,timeout=3)
+        if r.ok:
+            x=r.json()
+            return x if x.get("price") is not None else None
     except Exception:
-        return None
-
-def realtime_indicators(df):
-    if df is None or len(df)<2: return df
-    x=df.copy()
-    x["EMA12"]=x["close"].ewm(span=12,adjust=False).mean()
-    x["EMA26"]=x["close"].ewm(span=26,adjust=False).mean()
-    x["MACD"]=x["EMA12"]-x["EMA26"]
-    x["MACD_SIGNAL"]=x["MACD"].ewm(span=9,adjust=False).mean()
-    d=x["close"].diff()
-    gain=d.clip(lower=0).rolling(14).mean()
-    loss=(-d.clip(upper=0)).rolling(14).mean()
-    rs=gain/loss.replace(0,np.nan)
-    x["RSI"]=100-(100/(1+rs))
-    typical=(x["high"]+x["low"]+x["close"])/3
-    vol=x["volume"].replace(0,np.nan)
-    x["VWAP"]=(typical*vol.fillna(0)).cumsum()/vol.fillna(0).cumsum().replace(0,np.nan)
-    return x
-
-def render_realtime_chart(ticker):
-    if not ticker.endswith((".KS",".KQ")):
-        return
-    st.subheader("⚡ 키움 실시간 분봉")
-    tf=st.segmented_control("실시간 주기",[5,15,30,60],default=15,
-                            format_func=lambda x:f"{x}분",key=f"rt_tf_{ticker}")
-    df=fetch_kiwoom_bars(ticker,tf or 15)
-    if df is None or len(df)<2:
-        st.info("실시간 체결을 수집 중입니다. 장중 데이터가 쌓이면 차트가 자동 생성됩니다.")
-        return
-    x=realtime_indicators(df)
-    fig=go.Figure()
-    fig.add_trace(go.Candlestick(x=x.index,open=x["open"],high=x["high"],
-                                 low=x["low"],close=x["close"],name="키움"))
-    if "VWAP" in x:
-        fig.add_trace(go.Scatter(x=x.index,y=x["VWAP"],name="VWAP",mode="lines"))
-    fig.update_layout(height=480,xaxis_rangeslider_visible=False,
-                      margin=dict(l=10,r=10,t=35,b=10))
-    st.plotly_chart(fig,use_container_width=True,key=f"rt_chart_{ticker}_{tf}")
-    last=x.iloc[-1]
-    c1,c2,c3,c4=st.columns(4)
-    c1.metric("실시간 종가",money(last["close"],ticker))
-    c2.metric("RSI(14)",f'{last["RSI"]:.1f}' if pd.notna(last["RSI"]) else "-")
-    c3.metric("VWAP",money(last["VWAP"],ticker) if pd.notna(last["VWAP"]) else "-")
-    macd_txt=f'{last["MACD"]:.2f}' if pd.notna(last["MACD"]) else "-"
-    c4.metric("MACD",macd_txt)
-
-def rt_num(v):
-    try:
-        return abs(float(str(v).replace(",","").replace("+","")))
-    except Exception:
-        return None
+        pass
+    return None
 
 def money(v,t): return f"{v:,.0f}원" if t.endswith((".KS",".KQ")) else f"${v:,.2f}"
 PAT={1:"지지반등+거래량",2:"돌파후 눌림",3:"급락후 회복",4:"20일선 눌림",5:"박스 돌파",6:"이평 수렴→확산",7:"전고점 돌파"}
 
-st.title("📡 Stock Watch V10.5 · 키움 실시간")
-st.caption("V9 분석엔진 유지 · 국내주식 키움 실시간 브리지 · 미국주식 Yahoo 보조")
+st.title("📡 Stock Watch V9 + Kiwoom · 검색형 관심종목")
+st.caption("회사명/티커 검색 → ⭐ 추가 → 자동 판독 · 기존 기술분석 엔진 유지")
 
 with st.sidebar:
     st.header("⭐ 관심종목 관리")
@@ -458,15 +365,12 @@ if st.session_state.watch:
     A={k:analyze(v) for k,v in frames.items() if len(v)>25}; a=A["일"]
 
     st.subheader(f"{name} · {t}")
-    rt=read_kiwoom_realtime(t)
-    rt_price=rt_num(rt.get("price")) if rt else None
-    shown_price=rt_price if rt_price is not None else a["p"]
-    c=st.columns(3); c[0].metric("가격",money(shown_price,t)); c[1].metric("점수",f'{a["score"]}/100'); c[2].metric("판정",a["verdict"])
-    if rt:
-        st.success(f"📡 키움 실시간 연결 · {rt.get('updated_at','수신 중')}")
-    elif t.endswith((".KS",".KQ")):
-        st.caption("키움 실시간 대기 · 연결 전에는 Yahoo 가격 표시")
-    render_realtime_chart(t)
+    _rt=_kiwoom_quote(t)
+    if _rt:
+        st.success(f"📡 키움 실시간 {money(float(str(_rt.get('price')).replace(',','').replace('+','')),t)} · {_rt.get('updated_at','')}")
+    elif t.endswith((".KS",".KQ")) and KIWOOM_BRIDGE_URL:
+        st.caption("키움 실시간 연결 대기")
+    c=st.columns(3); c[0].metric("가격",money(a["p"],t)); c[1].metric("점수",f'{a["score"]}/100'); c[2].metric("판정",a["verdict"])
     st.write("**월→주→일:** "+" · ".join(f"{k} {q['trend']}({q['score']})" for k,q in reversed(list(A.items()))))
     st.write(f"지지 **{money(a['sup'],t)}** · 저항 **{money(a['res'],t)}** · 무효 **{money(a['invalid'],t)}**")
     if a["patterns"]: st.success("패턴: "+" / ".join(PAT[i] for i in a["patterns"]))
@@ -536,19 +440,4 @@ if st.session_state.watch:
         k=st.radio("큰 차트",["일","주","월"],horizontal=True)
         st.line_chart(frames[k][["Close","MA20","MA60"]].tail(160 if k=="일" else 90),height=430)
 
-st.warning("V10.5 · 국내주식은 Oracle 키움 체결을 누적해 5·15·30·60분봉과 RSI·MACD·VWAP을 실시간 계산합니다. 일·주·월 장기 이력은 기존 데이터 엔진을 함께 사용합니다.")
-
-
-st.divider()
-st.subheader("📡 Oracle 실시간 감시 동기화")
-if BRIDGE_URL:
-    st.caption("관심종목의 국내주식을 Oracle 키움 실시간 감시목록과 동기화합니다.")
-    if st.button("🔄 관심종목 전체 동기화", use_container_width=True):
-        okn=0
-        for _t in st.session_state.get("watch", []):
-            if yahoo_to_kiwoom_code(_t):
-                ok,_=bridge_watch("add",_t)
-                okn += int(ok)
-        st.success(f"국내주식 {okn}개 동기화 완료")
-else:
-    st.info("KIWOOM_BRIDGE_URL을 설정하면 관심종목 추가/삭제가 Oracle 키움 실시간 감시와 연결됩니다.")
+st.warning("현재 장중 데이터는 Yahoo 기반이라 지연/누락될 수 있습니다. 실제 체결·외국인/기관/프로그램·공매도·알림·주문은 실시간 API 연결 단계에서 추가합니다.")
