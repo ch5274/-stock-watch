@@ -1,17 +1,19 @@
-# Stock Watch V10.3
+# Stock Watch V10.5 Realtime Charts
 
-GitHub/Oracle용 통합본.
+V10.4 기능을 모두 유지하면서 국내주식 실시간 차트 엔진을 추가한 버전.
 
-파일:
-- app.py: V9 분석기 기반 V10.3 UI
-- kiwoom_realtime_service.py: 키움 토큰 자동발급 + WebSocket 자동재접속 + 실시간 JSON 브리지
-- requirements.txt: Python 의존성
+추가 기능
+- 키움 0B 실시간 체결 누적
+- 1분 원천 데이터에서 5/15/30/60분 OHLCV 생성
+- 실시간 캔들 차트
+- 실시간 RSI(14), MACD, VWAP
+- 관심종목 추가/삭제와 Oracle 감시목록 연동 유지
+- 연결 오류 시 새 토큰 발급 + 자동 재접속 유지
 
-보안:
-- App Key / App Secret은 GitHub에 넣지 않습니다.
-- Oracle의 ~/.kiwoom_env를 그대로 사용합니다.
+보안
+- App Key / App Secret은 GitHub에 포함하지 않음
+- ~/.kiwoom_env 사용
 
-현재 단계:
-- 국내주식 현재가: 키움 실시간 브리지 우선
-- 일/주/월 및 분봉 기술지표: 기존 Yahoo 이력 데이터 유지
-- 다음 단계: 키움 체결 누적으로 5/15/30/60분봉 완전 실시간화
+다음 확장
+- 실시간 MFI/OBV/ADX/ATR 및 기술점수 완전 실시간화
+- 수급/공시/뉴스/재무/밸류/촉매/리스크 통합점수 엔진

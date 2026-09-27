@@ -7,6 +7,7 @@ SOCKET_URL="wss://api.kiwoom.com:10000/api/websocket"
 ENV_PATH=os.path.expanduser("~/.kiwoom_env")
 WATCH_FILE=Path("/home/opc/kiwoom_watchlist.json")
 OUT_FILE=Path("/home/opc/kiwoom_realtime.json")
+TICK_FILE=Path("/home/opc/kiwoom_ticks.jsonl")
 DEFAULT_CODES=["039490"]
 
 def log(s): print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {s}",flush=True)
@@ -47,6 +48,19 @@ def atomic_write(obj):
     tmp.write_text(json.dumps(obj,ensure_ascii=False),encoding="utf-8")
     tmp.replace(OUT_FILE)
 
+def append_tick(code, price, volume, raw):
+    if price is None:
+        return
+    row={
+        "ts":datetime.now().isoformat(timespec="seconds"),
+        "code":code,
+        "price":price,
+        "volume":volume,
+        "raw":raw
+    }
+    with TICK_FILE.open("a",encoding="utf-8") as f:
+        f.write(json.dumps(row,ensure_ascii=False)+"\n")
+
 def extract_realtime(msg,state):
     # Kiwoom REAL messages can contain a list of realtime records. Preserve raw fields,
     # and map common 0B stock-execution FIDs when present.
@@ -67,6 +81,7 @@ def extract_realtime(msg,state):
         rec["updated_at"]=now
         rec["raw"]=vals
         state[code]=rec
+        append_tick(code, price, volume, vals)
     atomic_write(state)
 
 async def session():
@@ -76,7 +91,7 @@ async def session():
         log("WebSocket 연결 성공")
         await ws.send(json.dumps({"trnm":"LOGIN","token":token}))
         while True:
-            raw=await asyncio.wait_for(ws.recv(),timeout=90)
+            raw=await asyncio.wait_for(ws.recv(),timeout=30)
             m=json.loads(raw); tr=m.get("trnm")
             if tr=="PING": await ws.send(raw); continue
             if tr=="LOGIN":
